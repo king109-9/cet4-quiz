@@ -7,6 +7,7 @@
 <style>
 :root{--bg:#17171a;--card:#202024;--line:#2e2e34;--fg:#f2f2f4;--dim:#8b8b93;--red:#e4002b;--ok:#1db954;--no:#ff4d4f}
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:"Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
      display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}
 .wrap{width:100%;max-width:520px}
@@ -75,6 +76,14 @@ button{font-family:inherit;cursor:pointer}
       <option value="hard" selected>难度序：先难后易（长词·生僻词优先）</option>
       <option value="freq">词频序：先易后难（高频词优先）</option>
     </select>
+    <label class="autosay"><input id="bygrp" type="checkbox" onchange="toggleGrp()"> 按分组练习（每组 15 词、按原始顺序）</label>
+    <div id="grpbox">
+      <label>每组多少词（共 <span id="gtotal">300</span> 组）</label>
+      <input id="gsize" type="number" value="15" min="5" max="150" onchange="buildGroups()">
+      <label>第几组（✅ = 已做完）</label>
+      <select id="group" onchange="showPos()"></select>
+      <div class="hint" style="text-align:left;margin-top:6px">每 15 词 = 300 组（做 300 天）；想正好 30 组就把上面改成 150</div>
+    </div>
     <label>范围</label>
     <select id="limit" onchange="showPos()">
       <option value="120">前 120 词</option>
@@ -107,6 +116,7 @@ button{font-family:inherit;cursor:pointer}
     <div class="tag" id="verdict"></div>
     <div class="sub" id="detail"></div>
     <div class="wrongs" id="wrongs"></div>
+    <button class="go" id="nextgrp" hidden onclick="nextGroup()">下一组 →</button>
     <button class="go" onclick="start()">再背一组</button>
     <button class="go" style="background:#2a2a30;margin-top:8px" onclick="startWrong()">只练错词</button>
     <button class="go" style="background:#2a2a30;margin-top:8px" onclick="backToSetup()">首页</button>
@@ -193,22 +203,71 @@ function wrongSet(){
 function saveWrong(set){ LS.set('en4500_wrong', JSON.stringify([...set])); }
 function startWrong(){ $('#wrongonly').checked = true; start(); }
 
+// ---- 分组：4500 词按原始顺序切块，做完自动打勾 ----
+const KEY_GDONE = 'en4500_gdone';
+function gdoneSet(){
+  try { return new Set(JSON.parse(LS.get(KEY_GDONE, '[]'))); }
+  catch (e) { return new Set(); }
+}
+function saveGdone(s){ LS.set(KEY_GDONE, JSON.stringify([...s])); }
+const grpSize = () => Math.max(5, Math.min(150, +$('#gsize').value || 15));
+const grpTotal = () => Math.ceil(DATA.length / grpSize());
+function buildGroups(){
+  const sel = $('#group'); if (!sel) return;
+  const size = grpSize(), total = grpTotal(), done = gdoneSet(), cur = sel.value;
+  sel.innerHTML = '';
+  for (let i = 1; i <= total; i++){
+    const a = (i - 1) * size + 1, b = Math.min(i * size, DATA.length);
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = '第 ' + i + ' 组（第 ' + a + '–' + b + ' 词）' + (done.has(size + ':' + i) ? ' ✅' : '');
+    sel.appendChild(o);
+  }
+  if (cur && +cur <= total) sel.value = cur;
+  if ($('#gtotal')) $('#gtotal').textContent = String(total);
+  showPos();
+}
+function toggleGrp(){
+  const on = $('#bygrp').checked;
+  $('#grpbox').hidden = !on;
+  $('#limit').disabled = on;      // 分组时范围/顺序由分组决定
+  $('#order').disabled = on;
+  $('#count').disabled = on;
+  if (on) buildGroups();
+  showPos();
+}
+function nextGroup(){
+  const sel = $('#group'), n = Math.min(+sel.value + 1, sel.children.length);
+  sel.value = String(n);
+  start();
+}
+
 function start(){
   const isWrong = $('#wrongonly').checked;
-  const count = Math.max(5, Math.min(200, +$('#count').value || 30));
+  const byGrp = !isWrong && $('#bygrp').checked;
+  const gsize = grpSize(), gnum = byGrp ? +($('#group').value || 1) : 0;
+  const gStart = byGrp ? (gnum - 1) * gsize : 0;
+  const gEnd = byGrp ? Math.min(gnum * gsize, DATA.length) : 0;
+  const count = byGrp ? Math.max(1, gEnd - gStart)
+              : Math.max(5, Math.min(200, +$('#count').value || 30));
   const book = wrongSet();
-  const poolAll = isWrong ? DATA.filter(x => book.has(x[0])) : DATA.slice(0, +$('#limit').value);
+  const poolAll = isWrong ? DATA.filter(x => book.has(x[0]))
+                 : byGrp ? DATA.slice(gStart, gEnd)
+                 : DATA.slice(0, +$('#limit').value);
   if (isWrong && !poolAll.length){
     alert('错题本还是空的。先正常做几组，答错的词会自动进这里。');
     return;
   }
-  const order = $('#order').value;
+  const order = byGrp ? 'freq' : $('#order').value;   // 分组练习走原始顺序
   const seq = seqOf(poolAll, order);
-  let idx = isWrong ? 0 : +(LS.get(KEY_POS + order, 0));
+  let idx = (isWrong || byGrp) ? 0 : +(LS.get(KEY_POS + order, 0));
   if (idx >= seq.length) idx = 0;                       // 走完一圈从头再来
   const initial = seq.slice(idx, Math.min(idx + count, seq.length)).map(x => ({ w: x, turn: 1 }));
-  if ($('#qmode')) $('#qmode').textContent = (order === 'hard' ? '难度序' : '词频序') + ' · ' + ($('#mode').value === 'read' ? '认读' : '产出') + ' · 前 ' + poolAll.length + ' 词';
-  S = { isWrong, count, order, seqLen: seq.length, initial: initial.length, poolAll, mode: $('#mode').value,
+  const modeName = $('#mode').value === 'read' ? '认读' : '产出';
+  if ($('#qmode')) $('#qmode').textContent = byGrp
+    ? '第 ' + gnum + ' 组（第 ' + (gStart + 1) + '–' + gEnd + ' 词） · ' + modeName
+    : (order === 'hard' ? '难度序' : '词频序') + ' · ' + modeName + ' · 前 ' + poolAll.length + ' 词';
+  S = { isWrong, byGrp, gnum, gsize, count, order, seqLen: seq.length, initial: initial.length, poolAll, mode: $('#mode').value,
         queue: initial.slice(), fresh: 0, done: 0, wrong: [], startIdx: idx, locked: false };
   $('#setup').hidden = true; $('#done').hidden = true; $('#quiz').hidden = false;
   next();
@@ -270,7 +329,10 @@ function paint(){
 
 function finish(){
   const acc = S.done ? Math.round(S.fresh / S.done * 100) : 0;
-  if (!S.isWrong) LS.set(KEY_POS + S.order, String(Math.min(S.startIdx + S.done, S.seqLen)));
+  if (S.byGrp){                                       // 整组走完 → 打勾
+    const d = gdoneSet(); d.add(S.gsize + ':' + S.gnum); saveGdone(d);
+  } else if (!S.isWrong) LS.set(KEY_POS + S.order, String(Math.min(S.startIdx + S.done, S.seqLen)));
+  if ($('#nextgrp')) $('#nextgrp').hidden = !(S.byGrp && S.gnum < grpTotal());
   $('#quiz').hidden = true;
   $('#done').hidden = false;
   $('#score').textContent = acc + '%';
@@ -287,7 +349,7 @@ function finish(){
 
 function backToSetup(){
   // 中途返回：把已答的进度存下（done 含当前这道未答的，所以减 1）
-  if (S && !S.isWrong && S.done) LS.set(KEY_POS + S.order, String(Math.min(S.startIdx + Math.max(0, S.done - 1), S.seqLen)));
+  if (S && !S.isWrong && !S.byGrp && S.done) LS.set(KEY_POS + S.order, String(Math.min(S.startIdx + Math.max(0, S.done - 1), S.seqLen)));
   S = null;
   $('#quiz').hidden = true;
   $('#done').hidden = true;
@@ -301,6 +363,12 @@ function showPos(){
   const n = wrongSet().size;
   const isWrong = $('#wrongonly').checked;
   if ($('#wcount')) $('#wcount').textContent = n;
+  if ($('#bygrp') && $('#bygrp').checked && !isWrong){
+    const size = grpSize(), total = grpTotal(), g = +($('#group').value || 1);
+    const a = (g - 1) * size + 1, b = Math.min(g * size, DATA.length);
+    $('#posinfo').textContent = '分组模式：第 ' + g + ' / ' + total + ' 组（第 ' + a + '–' + b + ' 词）· 已完成 ' + gdoneSet().size + ' 组 · 错题本 ' + n + ' 词';
+    return;
+  }
   const pool = isWrong ? n : +$('#limit').value;
   const p = +(LS.get(KEY_POS + $('#order').value, 0));
   $('#posinfo').textContent = '当前进度：第 ' + (p + 1) + ' 词起 · 共 ' + pool + ' 词 · 错题本 ' + n + ' 词';
@@ -317,6 +385,7 @@ document.addEventListener('keydown', e => {
 const curWord = () => (S && S.queue[0] ? S.queue[0].w[0] : '');
 if ($('#say')) $('#say').onclick = () => { const t = curWord(); if (t) say(t); };
 
+buildGroups();
 showPos();
 if ($('#khint')) $('#khint').textContent = isTouchDevice()
   ? '点选项作答 · 点 🔊 听发音'
